@@ -1,5 +1,6 @@
 #pragma once
 
+//this removes the path from __FILE__ so my output doesn't get polluted
 inline consteval int wrangle_path(const char* c)
 {
     int last_slash=0;
@@ -10,13 +11,8 @@ inline consteval int wrangle_path(const char* c)
             last_slash=n;
         ++n;
     }
-    return last_slash;
+    return last_slash+1;
 }
-
-//+45 to hack away the unnecessary long path
-//it could be done in some other way too
-//prolly a consteval string wrangling function
-//that searches for the last / or \\ and returns the offset
 #define smort_assert(x) ((x)?(void)0:(std::cerr << "Assert failed in " << (__FILE__+wrangle_path(__FILE__)) << ":" << __LINE__ << ": " << #x << std::endl, std::abort()))
 
 using datum = int;
