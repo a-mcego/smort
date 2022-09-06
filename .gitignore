@@ -30,3 +30,11 @@
 *.exe
 *.out
 *.app
+
+# My stuff
+bin/*
+
+#Code::Blocks stuff
+*.depend
+*.cbp
+*.layout
