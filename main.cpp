@@ -8,11 +8,13 @@ struct Sudoku
     std::vector<int> clues;
     Smort smort;
 
+    ClassRange clue_range;
+
     void MakeConstraints()
     {
-        smort.n_classes = size;
+        smort.GetState().n_classes = size;
         //constraint #0 is the world
-        smort.constraints.push_back(Constraint{Constraint::TYPE::WORLD, size*size, size});
+        smort.GetState().constraints.push_back(Constraint{Constraint::TYPE::WORLD, size*size, clue_range});
         for(int Y=size; Y>=1; --Y)
         {
             int X = size/Y;
@@ -25,7 +27,7 @@ struct Sudoku
                     Relation::Def world, area;
 
                     world.constraint_id = 0;
-                    area.constraint_id = smort.constraints.size();
+                    area.constraint_id = smort.GetState().constraints.size();
 
                     for(int dy=starty; dy<starty+Y; ++dy)
                     {
@@ -35,9 +37,9 @@ struct Sudoku
                             area.cell_ids.push_back(area.cell_ids.size());
                         }
                     }
-                    Constraint c{Constraint::TYPE::ALL_DIFFERENT, size, size};
-                    smort.constraints.push_back(c);
-                    smort.relations.push_back(Relation{std::make_pair(world, area)});
+                    Constraint c{Constraint::TYPE::ALL_DIFFERENT, size, clue_range};
+                    smort.GetState().constraints.push_back(c);
+                    smort.GetState().relations.push_back(Relation{std::make_pair(world, area)});
                 }
             }
         }
@@ -45,20 +47,21 @@ struct Sudoku
 
     std::string Solve()
     {
-        //fill in the values
+        //add the clues as additional constraints
         smort_assert(clues.size() == size*size);
         for(int i=0; i<size*size; ++i)
         {
             if (clues[i] == -1)
                 continue;
-
-            int y = i/size;
-            int x = i%size;
-
-            int clue = clues[i];
             //constraint #0 is the world
-            auto view = smort.constraints[0].View(MakeVector(size_t(y*size+x)))[0];
-            Ops::SetOneTrue(view, clue, size);
+            Constraint constraint{Constraint::TYPE::WORLD, 1, ClassRange(ClassValue(clues[i]),ClassValue(clues[i]))};
+
+            smort.GetState().constraints.push_back(constraint);
+
+            Relation::Def world_def = Relation::Def{0,{i}};
+            Relation::Def clue_def = Relation::Def{smort.GetState().constraints.size()-1, {0}};
+
+            smort.GetState().relations.push_back(Relation{std::make_pair(world_def,clue_def)});
         }
 
         //and now solve
@@ -76,7 +79,7 @@ struct Sudoku
                     int sum=0,last=-1;
                     for(int k=0; k<size; ++k)
                     {
-                        int n = smort.constraints[0].data[i*81+j*9+k];
+                        int n = smort.GetState().constraints[0].data[i*81+j*9+k];
                         if (n)
                             sum+=1, last=k;
                     }
@@ -88,7 +91,7 @@ struct Sudoku
         return solution;
     }
 
-    Sudoku(const std::string& str, int size_):size(size_)
+    Sudoku(const std::string& str, int size_):size(size_),clue_range(ClassValue(1),ClassValue(size))
     {
         smort_assert(size*size == str.length());
         MakeConstraints();
@@ -97,7 +100,7 @@ struct Sudoku
             if (c == '0')
                 clues.push_back(-1);
             else
-                clues.push_back(c-'1');
+                clues.push_back(c-'0');
         }
     }
 };
@@ -131,12 +134,13 @@ int numzeros(std::string solution)
 
 void app()
 {
-    //std::ifstream filu("sudoku/medium.csv");
-    std::ifstream filu("sudoku/sudoku.csv");
+    std::ifstream filu("sudoku/medium.csv");
+    //std::ifstream filu("sudoku/sudoku.csv");
     //std::ifstream filu("sudoku/p5.csv");
     std::string line;
     std::getline(filu, line);
-    int total=0, good=0;
+    int total=0;
+    int classes[3] = {};
 
     int currtime = cloque();
 
@@ -154,21 +158,26 @@ void app()
         Sudoku sudoku{sudokudata[0], 9};
 
         std::string solution = sudoku.Solve();
-        //if (solution == sudokudata[1])
-        if (numzeros(solution) == 0)
-        {
-            good += 1;
-        }
+
+        classes[int(sudoku.smort.GetSolveState())] += 1;
         total += 1;
+
+        //int hm = sudoku.smort.hypotheses_made;
+        //cout << hm << " hypotheses made." << endl;
 
         if (cloque()-currtime >= 1000)
         {
-            int bad = total-good;
+            int fail = classes[0];
+            int unknown = classes[1];
+            int good = classes[2];
 
             float goodperc = float(good)/float(total)*100.0f;
-            float badperc = float(bad)/float(total)*100.0f;
+            float unknownperc = float(unknown)/float(total)*100.0f;
+            float failperc = float(fail)/float(total)*100.0f;
 
-            std::cout << "good " << goodperc << " %, bad " << badperc << " %,      " << good << " " << bad << " " << total << "      \r";
+            std::cout << "good " << goodperc << " %, unknown " << unknownperc << " %, fail " << failperc << " %    ";
+
+            std::cout << good << " " << unknown << " " << fail << " " << total << "      \r";
             currtime += 1000;
         }
     }
