@@ -1,7 +1,5 @@
 #pragma once
 
-
-
 template<typename K, typename V, typename Compare = std::less<K>>
 struct MaxCollector
 {

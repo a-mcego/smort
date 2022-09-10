@@ -125,6 +125,8 @@ SOLVESTATE Combine(SOLVESTATE a, SOLVESTATE b)
     return SOLVESTATE::SUCCESS;
 }
 
+#include "TensorView.h"
+
 struct Constraint
 {
     enum struct TYPE
@@ -146,6 +148,7 @@ struct Constraint
         return data[cell_n*classrange.N()+class_id.toT()];
     }
 
+    //FIXME: does this only work for ALL_DIFFERENT constraints?
     void Restrict(int cell_class_id)
     {
         int cell_id = cell_class_id/classrange.N();
@@ -176,6 +179,10 @@ struct Constraint
     //returns pair<cell_id, score>
     MinCollector<int,int> GetMostConstrainedUnsolvedCell()
     {
+        MinCollector<int,int> collector;
+        if (type != TYPE::ALL_DIFFERENT)
+            return collector;
+
         //cells are y-axis
         //classes are x-axis
         std::vector<int> cell_sums(n_cells,0);
@@ -193,7 +200,6 @@ struct Constraint
             }
         }
 
-        MinCollector<int,int> collector;
         for(int cell=0; cell<n_cells; ++cell)
         {
             for(int cl=0; cl<classrange.N(); ++cl)
@@ -212,6 +218,18 @@ struct Constraint
 
     bool UpdateWORLD() { return false; }
 
+    /*
+    bool UpdateALL_DIFFERENT()
+    {
+        bool changed = false;
+        const int Y = n_cells, X = classrange.N();
+
+        TensorView<datum, 2> tv {&data, {Y,X}};
+
+        return changed;
+    }
+
+    /*/
     bool UpdateALL_DIFFERENT()
     {
         bool changed = false;
@@ -259,10 +277,21 @@ struct Constraint
                     changed |= (data[y2*classrange.N()+last_x] != (y2==y));
                     data[y2*classrange.N()+last_x] = (y2==y);
                 }
-
             }
         }
         return changed;
+    }//*/
+
+    void PrintData()
+    {
+        for(int x=0; x<classrange.N(); ++x)
+        {
+            for(int y=0; y<n_cells; ++y)
+            {
+                cout << data[y*classrange.N()+x] << " ";
+            }
+            cout << endl;
+        }
     }
 
     static constexpr bool(Constraint::*const update_methods[int(TYPE::N)])() =
@@ -381,7 +410,7 @@ struct Smort
                         {
                             auto& val2 = v2[v_i][ci2.toT()];
                             bool different = (val1 != val2);
-                            changed = (changed || different);
+                            changed |= different;
                             if (different)
                             {
                                 v1[v_i][ci1.toT()] = 0;
@@ -420,8 +449,12 @@ struct Smort
             }
 
             //do constraint-internal updates
+            int c_id=0;
             for(Constraint& c: GetState().constraints)
+            {
+                ++c_id;
                 changed |= c.Update();
+            }
             if (!changed)
                 break;
         }
@@ -465,6 +498,11 @@ struct Smort
                 states.push(states.top());
 
                 //make hypothesis
+                //TODO: make hypothesis generation general
+                //currently it only works for ALL_DIFFERENT constraints
+                //but it could work like this: count how much the
+                //possibilities change by assuming hypothesis and
+                //choose the hypothesis that causes the lowest nonzero amount of change.
                 MinCollector<int,Hypothesis> hypo_collector;
 
                 for(int c_id=0; c_id<GetState().constraints.size(); ++c_id)
@@ -482,7 +520,7 @@ struct Smort
                 }
 
                 Hypothesis d = hypo_collector.data().second;
-                //std::cout << "Hypothesis found: " << d.constraint_id << ":" << d.cell_class_id << " with score " << hypo_collector.data().first << std::endl;
+                //std::cout << "Hypothesis found: constraint=" << d.constraint_id << ":cell=" << d.cell_class_id << " with score " << hypo_collector.data().first << std::endl;
 
                 Constraint& c = GetState().constraints[d.constraint_id];
                 c.Restrict(d.cell_class_id);
