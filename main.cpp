@@ -77,11 +77,13 @@ struct Sudoku
                 for(int j=0; j<size; ++j)
                 {
                     int sum=0,last=-1;
-                    for(int k=0; k<size; ++k)
+                    ClassRange& cr = smort.GetState().constraints[0].cells[i*9+j].classrange;
+                    for(ClassValue cv: cr)
+                    //for(int k=0; k<size; ++k)
                     {
-                        int n = smort.GetState().constraints[0].data[i*81+j*9+k];
+                        datum n = smort.GetState().constraints[0].cells[i*9+j].get(cv);
                         if (n)
-                            sum+=1, last=k;
+                            sum+=1, last=cr.ToClassID(cv).toT();
                     }
                     if (sum==1)
                         solution[i*9+j] = '1'+last;

@@ -22,43 +22,50 @@ namespace StrongTypedef
         }
         return ret;
     }
+
+    template<typename T, long long int ID_>
+    struct Strong
+    {
+    private:
+        T t;
+    public:
+        static constexpr long long int ID = ID_;
+
+        const T& toT() const { return t; }
+
+        Strong() = default;
+        Strong( const Strong & ) = default;
+        Strong( Strong && ) = default;
+        Strong& operator=( const Strong & ) = default;
+
+        explicit Strong(const T& val) { t = val; }
+
+        auto operator<=>(const Strong<T,ID_>&) const = default;
+
+        //reimplement all the operators! \o/
+
+        Strong<T,ID_>& operator++(){ ++t; return *this; }
+
+    #define implement_op(OP) \
+        Strong<T,ID_>& operator OP ## = (const Strong<T,ID_>& rhs) { t OP ## = rhs.t; return *this; }\
+        Strong<T,ID_> operator OP (const Strong<T,ID_>& rhs) const { Strong<T,ID_> ret = *this; ret OP ## = rhs; return ret; }
+
+        implement_op(+);
+        implement_op(-);
+        implement_op(*);
+        implement_op(/);
+        implement_op(<<);
+        implement_op(>>);
+    #undef implement_op
+    };
 }
-template<typename T, long long int ID_>
-struct Strong
-{
-private:
-    T t;
-public:
-    static constexpr long long int ID = ID_;
 
-    T toT() const { return t; }
-
-    explicit Strong(const T& val) { t = val; }
-
-    auto operator<=>(const Strong<T,ID_>&) const = default;
-
-    //reimplement all the operators! \o/
-
-    Strong<T,ID_>& operator++(){ ++t; return *this; }
-
-#define implement_op(OP) \
-    Strong<T,ID_>& operator OP ## = (const Strong<T,ID_>& rhs) { t OP ## = rhs.t; return *this; }\
-    Strong<T,ID_> operator OP (const Strong<T,ID_>& rhs) const { Strong<T,ID_> ret = *this; ret OP ## = rhs; return ret; }
-
-    implement_op(+);
-    implement_op(-);
-    implement_op(*);
-    implement_op(/);
-    implement_op(<<);
-    implement_op(>>);
-#undef implement_op
-};
 
 template<typename T, long long int ID_>
-std::ostream& operator<<(std::ostream& o, const Strong<T,ID_>& t)
+std::ostream& operator<<(std::ostream& o, const StrongTypedef::Strong<T,ID_>& t)
 {
     o << t.toT();
     return o;
 }
 
-#define MakeStrong(classname,t) using classname = Strong<int,StrongTypedef::name(#classname)>;
+#define MakeStrong(classname,t) using classname = StrongTypedef::Strong<int,StrongTypedef::name(#classname)>;

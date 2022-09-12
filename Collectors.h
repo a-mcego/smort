@@ -28,6 +28,6 @@ public:
     bool is_initialized() { return initialized; }
 };
 
-template<typename T, typename U, typename Compare = std::greater<T>>
+template<typename T, typename U>
 using MinCollector = MaxCollector<T,U,std::greater<T>>;
 

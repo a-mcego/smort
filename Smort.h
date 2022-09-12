@@ -34,8 +34,13 @@ struct Iter
 
 struct ClassRange
 {
-    const ClassValue lowest, highest; //both *inclusive*
-    const ClassID n_classes;
+    ClassValue lowest=ClassValue(0), highest=ClassValue(0); //both *inclusive*
+    ClassID n_classes=ClassID(-1);
+
+    ClassRange() = default;
+    ClassRange( const ClassRange & ) = default;
+    ClassRange( ClassRange && ) = default;
+    ClassRange& operator=( const ClassRange & ) = default;
 
     ClassRange(ClassValue l_, ClassValue h_):lowest(l_),highest(h_),n_classes(h_.toT()-l_.toT()+1) { smort_assert(n_classes > ClassID(0)); }
     ClassRange(ClassID size):lowest(0),highest(ClassValue(size.toT()-1)),n_classes(size) {}
@@ -51,47 +56,14 @@ struct ClassRange
 
     Iter<ClassValue> begin() { return Iter<ClassValue>(ClassValue(lowest)); }
     Iter<ClassValue> end() { return Iter<ClassValue>(highest+ClassValue(1)); }
+
+    bool in_range(ClassValue val)
+    {
+        return lowest <= val and val <= highest;
+    }
 };
 
 #include "Collectors.h"
-
-template<typename T>
-struct vectorview
-{
-    std::vector<T>*const v = nullptr;
-    int start;
-
-    vectorview(std::vector<T>* v_, int start_):v(v_),start(start_)
-    {
-        smort_assert(v != nullptr);
-        smort_assert(v->size() > start);
-    }
-
-    T& operator[](int n)
-    {
-        return v->at(start+n);
-    }
-    const T& operator[](int n) const
-    {
-        return v->at(start+n);
-    }
-
-    long long int size()
-    {
-        return v->size();
-    }
-};
-
-struct Ops
-{
-    static int CountPossibleOnes(const vectorview<datum>& v, int N)
-    {
-        int ret=0;
-        for(int i=0; i<N; ++i)
-            ret += (v[i]!=0?1:0);
-        return ret;
-    }
-};
 
 struct Relation
 {
@@ -133,40 +105,123 @@ struct Constraint
     {
         WORLD,
         ALL_DIFFERENT,
+        LESS_THAN,
         N
     } type;
 
-    //int n_classes;
+    struct Cell
+    {
+        ClassRange classrange;
+        std::vector<datum> data;
+        Cell(const ClassRange& cr_):classrange(cr_)
+        {
+            Assign<1>();
+        }
 
-    ClassRange classrange;
+        Cell(const Cell& p1):classrange(p1.classrange),data(p1.data)
+        {
+        }
+        template<datum VAL>
+        void Assign()
+        {
+            data.assign(classrange.N(), VAL);
+        }
 
-    int n_cells;
-    std::vector<datum> data;
+        template<datum VAL>
+        std::optional<ClassValue> lowest_value()
+        {
+            std::optional<ClassValue> ret;
+            for(ClassValue cv: classrange)
+            {
+                if(get(cv) == VAL)
+                {
+                    ret = cv;
+                    break;
+                }
+            }
+            return ret;
+        }
+
+        template<datum VAL>
+        std::optional<ClassValue> highest_value()
+        {
+            std::optional<ClassValue> ret;
+            for(ClassValue cv: classrange)
+            {
+                if(get(cv) == VAL)
+                    ret = cv;
+            }
+            return ret;
+        }
+
+        void LimitLowerBound(ClassValue cv)
+        {
+            if (classrange.lowest > cv)
+                return;
+            smort_assert(classrange.highest >= cv);
+            Cell newcell{ClassRange{cv,classrange.highest}};
+            for(ClassValue newcv: newcell.classrange)
+                newcell.set(newcv,get(newcv));
+            classrange.lowest = cv;
+            data = newcell.data;
+        }
+
+        void LimitUpperBound(ClassValue cv)
+        {
+            if (classrange.highest < cv)
+                return;
+            smort_assert(classrange.lowest <= cv);
+            Cell newcell{ClassRange{classrange.lowest,cv}};
+            for(ClassValue newcv: newcell.classrange)
+                newcell.set(newcv,get(newcv));
+            classrange.highest = cv;
+            data = newcell.data;
+        }
+
+        datum get(ClassValue cv)
+        {
+            if (!classrange.in_range(cv))
+                return 0;
+            return data[classrange.ToClassID(cv).toT()];
+        }
+        void set(ClassValue cv, datum d)
+        {
+            if (!classrange.in_range(cv))
+                return;
+            data[classrange.ToClassID(cv).toT()] = d;
+        }
+
+        int CountOnes()
+        {
+            int ones=0;
+            for(datum d: data)
+                if (d==1)
+                    ++ones;
+            return ones;
+        }
+
+        void SetToOneHot(ClassValue cv)
+        {
+            smort_assert(classrange.in_range(cv));
+            data.assign(classrange.N(), 0);
+            data[classrange.ToClassID(cv).toT()] = 1;
+        }
+
+    };
+    std::vector<Cell> cells;
 
     datum& operator()(int cell_n, ClassID class_id)
     {
-        return data[cell_n*classrange.N()+class_id.toT()];
-    }
-
-    //FIXME: does this only work for ALL_DIFFERENT constraints?
-    void Restrict(int cell_class_id)
-    {
-        int cell_id = cell_class_id/classrange.N();
-        int class_id = cell_class_id%classrange.N();
-
-        for(int class_i=0; class_i<classrange.N(); ++class_i)
-        {
-            data[cell_id*classrange.N()+class_i] = (class_i==class_id?1:0);
-        }
+        return cells[cell_n].data[class_id.toT()];
     }
 
     SOLVESTATE GetSolveState()
     {
         SOLVESTATE ret = SOLVESTATE::SUCCESS;
 
-        for(int i=0; i<n_cells; ++i)
+        for(int i=0; i<cells.size(); ++i)
         {
-            int ones = Ops::CountPossibleOnes(vectorview<datum>(&data,i*classrange.N()), classrange.N());
+            int ones = cells[i].CountOnes();
 
             if (ones == 0)
                 return SOLVESTATE::FAILURE;
@@ -177,40 +232,45 @@ struct Constraint
     }
 
     //returns pair<cell_id, score>
-    MinCollector<int,int> GetMostConstrainedUnsolvedCell()
+    MinCollector<int,std::pair<int,ClassValue>> GetMostConstrainedUnsolvedCell()
     {
-        MinCollector<int,int> collector;
+        MinCollector<int,std::pair<int,ClassValue>> collector;
         if (type != TYPE::ALL_DIFFERENT)
             return collector;
 
         //cells are y-axis
         //classes are x-axis
-        std::vector<int> cell_sums(n_cells,0);
-        std::vector<int> class_sums(classrange.N(),0);
+        std::vector<int> cell_sums(cells.size(),0);
+        //std::vector<int> class_sums(classrange.N(),0);
+        std::map<ClassValue,int> class_sums;
 
-        for(int cell=0; cell<n_cells; ++cell)
+        for(int cell=0; cell<cells.size(); ++cell)
         {
-            for(int cl=0; cl<classrange.N(); ++cl)
+            //for(int cl=0; cl<cells[cell].classrange.N(); ++cl)
+            for(ClassValue cv: cells[cell].classrange)
             {
-                if (data[cell*classrange.N()+cl] != 0)
+                if (cells[cell].get(cv) != 0)
                 {
                     cell_sums[cell] += 1;
-                    class_sums[cl] += 1;
+                    class_sums[cv] += 1;
                 }
             }
         }
 
-        for(int cell=0; cell<n_cells; ++cell)
+        for(int cell=0; cell<cells.size(); ++cell)
         {
-            for(int cl=0; cl<classrange.N(); ++cl)
+            //for(int cl=0; cl<classrange.N(); ++cl)
+            for(ClassValue cv: cells[cell].classrange)
             {
-                int coord = cell*classrange.N()+cl;
+                /*int coord = cell*classrange.N()+cl;
                 if (data[coord] == 0)
+                    continue;*/
+                if (cells[cell].get(cv) == 0)
                     continue;
-                int score = cell_sums[cell]+class_sums[cl];
-                if (cell_sums[cell]+class_sums[cl] == 2)
+                int score = cell_sums[cell]+class_sums[cv];
+                if (cell_sums[cell]+class_sums[cv] == 2)
                     continue;
-                collector.insert(score, coord);
+                collector.insert(score, std::make_pair(cell,cv));
             }
         }
         return collector;
@@ -232,104 +292,121 @@ struct Constraint
     /*/
     bool UpdateALL_DIFFERENT()
     {
-        bool changed = false;
-        const int Y = n_cells, X = classrange.N();
+        std::set<ClassValue> cvs;
+        for(Cell& c: cells)
+        {
+            for(ClassValue cv: c.classrange)
+                cvs.insert(cv);
+        }
 
-        for(int x=0; x<X; ++x)
+
+        bool changed = false;
+        const int Y = cells.size();
+
+        for(ClassValue cv: cvs)
         {
             //find naked single
-            int sum=0, last_y=-1;
+            int sum=0, last_y=-1; bool y_set=false;
             for(int y=0; y<Y; ++y)
             {
-                datum val = data[y*classrange.N()+x];
+                datum val = cells[y].get(cv);
                 sum += val;
                 if (val)
-                    last_y=y;
+                    last_y=y, y_set=true;
             }
             //if found, set the corresponding other thing to onehot
             if (sum == 1)
             {
-                smort_assert(last_y!=-1);
-                for(int x2=0; x2<X; ++x2)
+                smort_assert(y_set);
+                //for(int x2=0; x2<X; ++x2)
+                for(ClassValue cv2: cvs)
                 {
-                    changed |= (data[last_y*classrange.N()+x2] != (x2==x));
-                    data[last_y*classrange.N()+x2] = (x2==x);
+                    changed |= (cells[last_y].get(cv2) != (cv2==cv));
+                    cells[last_y].set(cv2, (cv2==cv));
                 }
-
             }
         }
-        //samma på svenska
+
         for(int y=0; y<Y; ++y)
         {
-            int sum=0, last_x=-1;
-            for(int x=0; x<X; ++x)
+            //find naked single
+            int sum=0; ClassValue last_cv{-1}; bool cv_set=false;
+            for(ClassValue cv: cvs)
             {
-                datum val = data[y*classrange.N()+x];
+                datum val = cells[y].get(cv);
                 sum += val;
                 if (val)
-                    last_x=x;
+                    last_cv=cv, cv_set=true;
             }
+            //if found, set the corresponding other thing to onehot
             if (sum == 1)
             {
-                smort_assert(last_x!=-1);
+                smort_assert(cv_set);
+                //for(int x2=0; x2<X; ++x2)
                 for(int y2=0; y2<Y; ++y2)
                 {
-                    changed |= (data[y2*classrange.N()+last_x] != (y2==y));
-                    data[y2*classrange.N()+last_x] = (y2==y);
+                    changed |= (cells[y2].get(last_cv) != (y2==y));
+                    cells[y2].set(last_cv, (y2==y));
                 }
             }
         }
         return changed;
     }//*/
 
-    void PrintData()
+    bool UpdateLESS_THAN()
     {
-        for(int x=0; x<classrange.N(); ++x)
+        //cell[i] < cell[i+1] for all valid i
+        for(int c_id=0; c_id<cells.size(); ++c_id)
         {
-            for(int y=0; y<n_cells; ++y)
+            Cell& c = cells[c_id];
+            auto low_opt = c.lowest_value<1>();
+            if (low_opt)
             {
-                cout << data[y*classrange.N()+x] << " ";
+                auto low = low_opt.value();
+                for(int c_right_id=c_id+1; c_right_id<cells.size(); ++c_right_id)
+                {
+                    Cell& c2 = cells[c_right_id];
+                    c2.LimitLowerBound(low+ClassValue(1));
+                }
             }
-            cout << endl;
+
+            auto high_opt = c.highest_value<1>();
+            if (high_opt)
+            {
+                auto high = high_opt.value();
+                for(int c_left_id=0; c_left_id<c_id; ++c_left_id)
+                {
+                    Cell& c2 = cells[c_left_id];
+                    c2.LimitUpperBound(high-ClassValue(1));
+                }
+
+            }
         }
+        return false;
     }
 
     static constexpr bool(Constraint::*const update_methods[int(TYPE::N)])() =
     {
         &Constraint::UpdateWORLD,
         &Constraint::UpdateALL_DIFFERENT,
+        &Constraint::UpdateLESS_THAN,
     };
 
     bool Update() { return (this->*update_methods[int(type)])(); }
 
-    //Constraint(TYPE type_, int n_cells_, int n_classes_):type(type_), classrange(ClassValue(0),ClassValue(n_classes_)), n_cells(n_cells_)
-    Constraint(TYPE type_, int n_cells_, ClassRange classrange_):type(type_), classrange(classrange_), n_cells(n_cells_)
-
+    Constraint(TYPE type_, int n_cells, ClassRange classrange_):type(type_)
     {
-        data = std::vector<datum>(n_cells*classrange.N(), true);
-    }
-
-    std::vector<vectorview<datum>> View(const std::vector<size_t>& ids)
-    {
-        std::vector<vectorview<datum>> data_ptrs;
-        for(size_t id: ids)
-        {
-            smort_assert(id < n_cells);
-            data_ptrs.push_back(vectorview<datum>(&data,id*classrange.N()));
-        }
-        return data_ptrs;
-    }
-
-    vectorview<datum> View(const size_t id=0)
-    {
-        return vectorview<datum>(&data,id*classrange.N());
+        for(int i=0; i<n_cells; ++i)
+            cells.push_back(Cell(classrange_));
     }
 };
 
 
 struct Hypothesis
 {
-    int constraint_id=-1, cell_class_id=-1;
+    int constraint_id=-1;
+    int cell_id=-1;
+    ClassValue classvalue;
 };
 
 
@@ -381,70 +458,36 @@ struct Smort
             {
                 Constraint& c1 = GetState().constraints[r.defs.first.constraint_id];
                 Constraint& c2 = GetState().constraints[r.defs.second.constraint_id];
-
-                ClassRange& cr1 = c1.classrange;
-                ClassRange& cr2 = c2.classrange;
-
-                std::vector<vectorview<datum>> v1 = c1.View(r.defs.first.cell_ids);
-                std::vector<vectorview<datum>> v2 = c2.View(r.defs.second.cell_ids);
-
-                smort_assert(v1.size() == v2.size());
-
-                for(int v_i=0; v_i<v1.size(); ++v_i)
+                for(int i=0; i<r.defs.first.cell_ids.size(); ++i)
                 {
-                    //cout << "CV1 loop" << endl;
-                    for(ClassValue cv1: cr1)
+                    Constraint::Cell& cell1 = c1.cells[r.defs.first.cell_ids[i]];
+                    Constraint::Cell& cell2 = c2.cells[r.defs.second.cell_ids[i]];
+
+                    for(ClassValue cv1: cell1.classrange)
                     {
-                        ClassID ci1 = cr1.ToClassID(cv1);
-                        ClassID ci2 = cr2.ToClassID(cv1); //cv1 intentional!
-
-                        //cout << cv1 << " " << ci1 << " " << ci2 << endl;
-
-                        auto& val1 = v1[v_i][ci1.toT()];
-                        if (ci2 == ClassID(-1)) //class isnt found on c2
+                        datum val1 = cell1.get(cv1);
+                        datum val2 = cell2.get(cv1);
+                        bool different = (val1 != val2);
+                        changed |= different;
+                        if (different)
                         {
-                            changed |= (val1 != 0);
-                            val1 = 0;
-                        }
-                        else
-                        {
-                            auto& val2 = v2[v_i][ci2.toT()];
-                            bool different = (val1 != val2);
-                            changed |= different;
-                            if (different)
-                            {
-                                v1[v_i][ci1.toT()] = 0;
-                                v2[v_i][ci2.toT()] = 0;
-                            }
+                            cell1.set(cv1,0);
+                            cell2.set(cv1,0);
                         }
                     }
-                    //cout << "CV2 loop" << endl;
-                    for(ClassValue cv2: cr2)
+
+                    for(ClassValue cv2: cell2.classrange)
                     {
-                        ClassID ci1 = cr1.ToClassID(cv2);
-                        ClassID ci2 = cr2.ToClassID(cv2); //cv2 intentional!
-
-                        //cout << cv2 << " " << ci1 << " " << ci2 << endl;
-
-                        auto& val2 = v2[v_i][ci2.toT()];
-                        if (ci1 == ClassID(-1)) //class isnt found on c2
+                        datum val1 = cell1.get(cv2);
+                        datum val2 = cell2.get(cv2);
+                        bool different = (val1 != val2);
+                        changed |= different;
+                        if (different)
                         {
-                            changed |= (val2 != 0);
-                            val2 = 0;
-                        }
-                        else
-                        {
-                            auto& val1 = v1[v_i][ci1.toT()];
-                            bool different = (val2 != val1);
-                            changed |= different;
-                            if (different)
-                            {
-                                val2 = 0;
-                                val1 = 0;
-                            }
+                            cell1.set(cv2,0);
+                            cell2.set(cv2,0);
                         }
                     }
-                    //cout << "End loops" << endl;
                 }
             }
 
@@ -489,7 +532,7 @@ struct Smort
                 Hypothesis h = hypotheses.top();
                 hypotheses.pop();
                 auto& c = GetState().constraints[h.constraint_id];
-                c.data[h.cell_class_id] = 0;
+                c.cells[h.cell_id].set(h.classvalue,0);
             }
 
             if (st == SOLVESTATE::INDETERMINATE)
@@ -511,11 +554,12 @@ struct Smort
                     Hypothesis h;
                     h.constraint_id = c_id;
 
-                    MinCollector<int,int> p = c.GetMostConstrainedUnsolvedCell();
+                    MinCollector<int,std::pair<int,ClassValue>> p = c.GetMostConstrainedUnsolvedCell();
                     if (!p.is_initialized())
                         continue;
 
-                    h.cell_class_id = p.data().second;
+                    h.cell_id = p.data().second.first;
+                    h.classvalue = p.data().second.second;
                     hypo_collector.insert(p.data().first,h);
                 }
 
@@ -523,7 +567,7 @@ struct Smort
                 //std::cout << "Hypothesis found: constraint=" << d.constraint_id << ":cell=" << d.cell_class_id << " with score " << hypo_collector.data().first << std::endl;
 
                 Constraint& c = GetState().constraints[d.constraint_id];
-                c.Restrict(d.cell_class_id);
+                c.cells[d.cell_id].SetToOneHot(d.classvalue);
                 hypotheses.push(d);
                 ++hypotheses_made;
             }
